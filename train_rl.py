@@ -23,6 +23,8 @@ Usage
 
 import argparse
 import sys
+import time
+from functools import partial
 from pathlib import Path
 import torch
 import numpy as np
@@ -30,7 +32,7 @@ import pandas as pd
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import VecNormalize
+from stable_baselines3.common.vec_env import VecNormalize, SubprocVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import (
     BaseCallback, EvalCallback, CheckpointCallback,
@@ -43,6 +45,12 @@ from src.env import CCUEnv
 RL_DIR = Path("models/rl")
 
 
+# ── Picklable env factory (required for SubprocVecEnv on Windows) ─────────────
+
+def _make_env(**kwargs):
+    return Monitor(CCUEnv(**kwargs))
+
+
 # ── Curriculum callback ───────────────────────────────────────────────────────
 
 class CurriculumCallback(BaseCallback):
@@ -53,10 +61,7 @@ class CurriculumCallback(BaseCallback):
         self._phase = 0
 
     def _set_phase(self, p):
-        for env in self.training_env.envs:
-            inner = getattr(env, "env", env)
-            if hasattr(inner, "set_phase"):
-                inner.set_phase(p)
+        self.training_env.env_method("set_phase", p)
 
     def _on_step(self):
         t = self.num_timesteps
@@ -127,18 +132,18 @@ def train(args):
     )
 
     train_env = VecNormalize(
-        make_vec_env(lambda: Monitor(CCUEnv(**env_kwargs)), n_envs=args.n_envs),
+        make_vec_env(partial(_make_env, **env_kwargs),
+                     n_envs=args.n_envs, vec_env_cls=SubprocVecEnv),
         norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0,
     )
 
     # Eval env must also be VecNormalize-wrapped so EvalCallback can sync stats
+    eval_kwargs = {**env_kwargs, "step_prob": 0.0, "obs_noise": False,
+                   "domain_rand": False, "continue_prob": 0.0,
+                   "curriculum_phase": 2}
     eval_env = VecNormalize(
-        make_vec_env(lambda: Monitor(CCUEnv(
-            **{**env_kwargs,
-               "step_prob": 0.0, "obs_noise": False,
-               "domain_rand": False, "continue_prob": 0.0,
-               "curriculum_phase": 2}
-        )), n_envs=1),
+        make_vec_env(partial(_make_env, **eval_kwargs),
+                     n_envs=args.eval_envs, vec_env_cls=SubprocVecEnv),
         norm_obs=True, norm_reward=False,   # don't normalise reward for eval
         clip_obs=10.0,
     )
@@ -237,6 +242,7 @@ def main():
     p.add_argument("--n-envs",      type=int,   default=16)
     p.add_argument("--lstm-hidden", type=int,   default=512)
     p.add_argument("--eval-freq",   type=int,   default=25_000)
+    p.add_argument("--eval-envs",   type=int,   default=50)
     p.add_argument("--eval-only",   action="store_true")
     p.add_argument("--model",       default="models/rl/ppo_ccu_dense.zip")
     args = p.parse_args()
