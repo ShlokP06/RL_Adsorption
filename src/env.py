@@ -67,6 +67,7 @@ class CCUEnv(gym.Env):
                  lam_integral    = 0.15,
                  lam_energy_int  = 0.08,
                  lam_above       = 0.10,
+                 lam_over        = 0.05,
                  lam_flood       = 0.15,
                  step_prob       = 0.04,
                  actuator_lag    = True,
@@ -178,8 +179,6 @@ class CCUEnv(gym.Env):
             self.y_mean = float(rng.uniform(self.y_lo, self.y_hi))
             self.G, self.y = self.G_mean, self.y_mean
 
-    # ── Actuators ─────────────────────────────────────────────────────────────
-
     def _step_act(self):
         if not self.act_lag:
             self.L_act  = self.L_cmd
@@ -195,8 +194,7 @@ class CCUEnv(gym.Env):
         self.al_act = float(np.clip(self.al_act, self.al_lo, self.al_hi))
         self.T_act  = float(np.clip(self.T_act,  self.T_lo,  self.T_hi))
         self.ic_act = float(np.clip(self.ic_act, self.ic_lo, self.ic_hi))
-
-    # ── Surrogate ─────────────────────────────────────────────────────────────
+        self.L_act = self._project_L(self.L_act)
 
     def _query(self):
         r = self.surrogate.predict(

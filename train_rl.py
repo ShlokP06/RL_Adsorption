@@ -84,9 +84,6 @@ class CurriculumCallback(BaseCallback):
             log.info("Curriculum → Phase 2 (step changes)  [%d steps]", t)
         return True
 
-
-# ── Domain metrics callback (TensorBoard) ────────────────────────────────────
-
 class DomainMetricsCallback(BaseCallback):
     """Logs capture_rate, E_specific_GJ, flood_fraction to TensorBoard each
     rollout by averaging the most recent episode info dicts."""
@@ -383,12 +380,8 @@ def main() -> None:
     )
 
     p = argparse.ArgumentParser(description="Train RecurrentPPO on CCU env")
-
-    # Paths
     p.add_argument("--model-path",  default="models/surrogate/model.pt")
     p.add_argument("--scaler-path", default="models/surrogate/scalers.pkl")
-
-    # Environment
     p.add_argument("--max-steps",   type=int,   default=120)
     p.add_argument("--lam-min",     type=float, default=0.0)
     p.add_argument("--lam-max",     type=float, default=0.10,
@@ -404,13 +397,9 @@ def main() -> None:
     p.add_argument("--lam-flood",   type=float, default=0.10,
                    help="Flood soft penalty (reduced: hard constraint does the safety work)")
     p.add_argument("--step-prob",   type=float, default=0.04)
-
-    # Curriculum
     p.add_argument("--phase1",      type=int,   default=300_000,
                    help="Phase 1 start (longer Phase 0 for capture fundamentals)")
     p.add_argument("--phase2",      type=int,   default=700_000)
-
-    # Training
     p.add_argument("--timesteps",   type=int,   default=2_000_000)
     p.add_argument("--lr",          type=float, default=3e-4)
     p.add_argument("--n-envs",      type=int,   default=16)
@@ -425,8 +414,6 @@ def main() -> None:
                    help="Use SubprocVecEnv instead of DummyVecEnv")
     p.add_argument("--resume",      default=None,
                    help="Path to checkpoint .zip to resume training from")
-
-    # Evaluation
     p.add_argument("--eval-freq",     type=int, default=25_000)
     p.add_argument("--eval-envs",     type=int, default=8)
     p.add_argument("--eval-episodes", type=int, default=50)
@@ -434,14 +421,11 @@ def main() -> None:
     p.add_argument("--model",         default="models/rl/best/best_model.zip")
     p.add_argument("--vecnorm",       default="models/rl/vecnorm.pkl",
                    help="Path to VecNormalize stats for eval-only mode")
-
     args = p.parse_args()
-
     if args.eval_only:
         eval_only(args)
     else:
         train(args)
-
 
 if __name__ == "__main__":
     main()
