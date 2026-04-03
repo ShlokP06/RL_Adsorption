@@ -18,11 +18,12 @@ Usage
 -----
     python train_rl.py
     python train_rl.py --timesteps 1000000 --n-envs 8
+    python train_rl.py --resume models/rl/ppo_ccu.zip --timesteps 1000000
     python train_rl.py --eval-only --model models/rl/best/best_model.zip
 """
 
 import argparse
-import sys
+import logging
 import time
 from functools import partial
 from pathlib import Path
@@ -37,10 +38,12 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import (
     BaseCallback, EvalCallback, CheckpointCallback,
 )
+from stable_baselines3.common.utils import sync_envs_normalization
 from sb3_contrib import RecurrentPPO
 
-sys.path.insert(0, str(Path(__file__).parent))
 from src.env import CCUEnv
+
+log = logging.getLogger(__name__)
 
 RL_DIR = Path("models/rl")
 
@@ -64,32 +67,86 @@ def _make_env(**kwargs):
 
 class CurriculumCallback(BaseCallback):
 
-    def __init__(self, phase1, phase2):
+    def __init__(self, phase1: int, phase2: int) -> None:
         super().__init__(verbose=0)
         self.phase1, self.phase2 = phase1, phase2
         self._phase = 0
 
-    def _on_step(self):
+    def _on_step(self) -> bool:
         t = self.num_timesteps
         if self._phase == 0 and t >= self.phase1:
             self._phase = 1
             self.training_env.env_method("set_phase", 1)
-            print(f"\n  Curriculum → Phase 1 (OU drift)  [{t:,} steps]\n")
+            log.info("Curriculum → Phase 1 (OU drift)  [%d steps]", t)
         elif self._phase == 1 and t >= self.phase2:
             self._phase = 2
             self.training_env.env_method("set_phase", 2)
-            print(f"\n  Curriculum → Phase 2 (step changes)  [{t:,} steps]\n")
+            log.info("Curriculum → Phase 2 (step changes)  [%d steps]", t)
         return True
+
+
+# ── Domain metrics callback (TensorBoard) ────────────────────────────────────
+
+class DomainMetricsCallback(BaseCallback):
+    """Logs capture_rate, E_specific_GJ, flood_fraction to TensorBoard each
+    rollout by averaging the most recent episode info dicts."""
+
+    def __init__(self) -> None:
+        super().__init__(verbose=0)
+        self._ep_infos: list[dict] = []
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            if "episode" in info:
+                self._ep_infos.append(info)
+        return True
+
+    def _on_rollout_end(self) -> None:
+        if not self._ep_infos:
+            return
+        for key in ("capture_rate", "E_specific_GJ", "flood_fraction"):
+            vals = [i[key] for i in self._ep_infos if key in i]
+            if vals:
+                self.logger.record(f"domain/{key}", float(np.mean(vals)))
+        self._ep_infos.clear()
+
+
+# ── Syncing EvalCallback ─────────────────────────────────────────────────────
+
+class SyncEvalCallback(EvalCallback):
+    """EvalCallback that keeps the eval VecNormalize obs statistics in sync
+    with the training env before each evaluation pass.
+
+    Without this, the eval env starts from an uninitialised (all-zeros)
+    running mean/variance, so the policy sees a different obs distribution
+    during evaluation than during training — making early eval scores
+    unreliable and best-model selection biased.
+    """
+
+    def _on_step(self) -> bool:
+        if (isinstance(self.training_env, VecNormalize) and
+                isinstance(self.eval_env, VecNormalize)):
+            sync_envs_normalization(self.training_env, self.eval_env)
+        return super()._on_step()
 
 
 # ── Evaluation (handles RecurrentPPO + VecEnv correctly) ─────────────────────
 
-def evaluate(model, env, n_episodes=200):
+def evaluate(model: RecurrentPPO, env: VecNormalize, n_episodes: int = 200) -> pd.DataFrame:
     """
     Evaluate RecurrentPPO with proper LSTM state tracking.
     Uses all VecEnv workers in parallel for fast evaluation.
+
+    Args:
+        model: Trained RecurrentPPO model.
+        env: VecNormalize-wrapped evaluation environment.
+        n_episodes: Number of complete episodes to collect.
+
+    Returns:
+        DataFrame of per-episode metrics.
     """
-    records = []
+    records: list[dict] = []
 
     # SB3 VecEnv.reset() returns ndarray (not tuple)
     obs = env.reset()
@@ -112,7 +169,7 @@ def evaluate(model, env, n_episodes=200):
         for i in range(n_envs):
             if dones[i] and len(records) < n_episodes:
                 info = infos[i]
-                rec = {}
+                rec: dict = {}
                 for k, v in info.items():
                     if isinstance(v, (int, float, np.integer, np.floating)):
                         rec[k] = float(v)
@@ -121,35 +178,38 @@ def evaluate(model, env, n_episodes=200):
                 records.append(rec)
 
     df = pd.DataFrame(records[:n_episodes])
-    print("\n" + "=" * 55)
-    print("EVALUATION")
-    print("=" * 55)
+    log.info("=" * 55)
+    log.info("EVALUATION  (%d episodes)", len(df))
+    log.info("=" * 55)
     for col in ["capture_rate", "E_specific_GJ", "ep_reward"]:
         if col in df.columns:
             v = df[col]
-            print(f"  {col:<20} mean={v.mean():.3f}  "
-                  f"min={v.min():.3f}  max={v.max():.3f}")
+            log.info("  %-20s mean=%.3f  min=%.3f  max=%.3f",
+                     col, v.mean(), v.min(), v.max())
     if "capture_rate" in df.columns:
-        print(f"\n  ≥85% capture : {(df.capture_rate >= 85).mean() * 100:.1f}%")
-        print(f"  ≥90% capture : {(df.capture_rate >= 90).mean() * 100:.1f}%")
+        log.info("  >=85%% capture : %.1f%%",
+                 (df.capture_rate >= 85).mean() * 100)
+        log.info("  >=90%% capture : %.1f%%",
+                 (df.capture_rate >= 90).mean() * 100)
     if "flood_fraction" in df.columns:
-        print(f"  Flood events  : {(df.flood_fraction > 0.80).mean() * 100:.1f}%")
-    print("=" * 55)
+        log.info("  Flood events  : %.1f%%",
+                 (df.flood_fraction > 0.80).mean() * 100)
+    log.info("=" * 55)
     return df
 
 
 # ── Training ─────────────────────────────────────────────────────────────────
 
-def train(args):
+def train(args) -> None:
     RL_DIR.mkdir(parents=True, exist_ok=True)
     Path("logs").mkdir(exist_ok=True)
     Path("results").mkdir(exist_ok=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cpu":
-        print("\n  WARNING: CUDA not available — training on CPU (slow).")
-        print("  Install PyTorch+CUDA: pip install torch --index-url "
-              "https://download.pytorch.org/whl/cu121\n")
+        log.warning("CUDA not available — training on CPU (slow). "
+                    "Install PyTorch+CUDA: pip install torch --index-url "
+                    "https://download.pytorch.org/whl/cu121")
 
     # DummyVecEnv is default: single-process, no pickling issues, stable on
     # all platforms. SubprocVecEnv available via --subproc for heavier envs.
@@ -179,7 +239,9 @@ def train(args):
         norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0,
     )
 
-    # Eval envs: always DummyVecEnv (lightweight, no subprocess overhead)
+    # Eval envs: always DummyVecEnv (lightweight, no subprocess overhead).
+    # SyncEvalCallback keeps obs_rms in sync with the training env so the
+    # eval policy sees the same normalization as during training.
     eval_kwargs = {
         **env_kwargs,
         "step_prob": 0.0,
@@ -202,7 +264,8 @@ def train(args):
 
     callbacks = [
         CurriculumCallback(args.phase1, args.phase2),
-        EvalCallback(
+        DomainMetricsCallback(),
+        SyncEvalCallback(
             eval_env,
             best_model_save_path=str(RL_DIR / "best"),
             log_path="logs",
@@ -219,54 +282,69 @@ def train(args):
         ),
     ]
 
-    model = RecurrentPPO(
-        policy          = "MlpLstmPolicy",
-        env             = train_env,
-        learning_rate   = linear_schedule(args.lr),
-        n_steps         = args.n_steps,
-        batch_size      = batch_size,
-        n_epochs        = args.n_epochs,
-        gamma           = 0.99,
-        gae_lambda      = 0.95,
-        clip_range      = 0.2,
-        ent_coef        = 0.01,
-        vf_coef         = 0.5,
-        max_grad_norm   = 0.5,
-        policy_kwargs   = dict(
-            lstm_hidden_size = args.lstm_hidden,
-            n_lstm_layers    = args.lstm_layers,
-            net_arch         = dict(pi=[256, 128], vf=[256, 128]),
-        ),
-        device          = device,
-        tensorboard_log = "logs/",
-        verbose         = 1,
-        seed            = 42,
-    )
+    if args.resume:
+        resume_path = Path(args.resume)
+        if not resume_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
+        log.info("Resuming from checkpoint: %s", resume_path)
+        model = RecurrentPPO.load(str(resume_path), env=train_env,
+                                  device=device, verbose=1,
+                                  tensorboard_log="logs/")
+        # Restore VecNormalize stats if available alongside the checkpoint
+        vecnorm_resume = RL_DIR / "vecnorm.pkl"
+        if vecnorm_resume.exists():
+            train_env = VecNormalize.load(str(vecnorm_resume), train_env.venv)
+            model.set_env(train_env)
+            log.info("Restored VecNormalize stats from %s", vecnorm_resume)
+    else:
+        model = RecurrentPPO(
+            policy          = "MlpLstmPolicy",
+            env             = train_env,
+            learning_rate   = linear_schedule(args.lr),
+            n_steps         = args.n_steps,
+            batch_size      = batch_size,
+            n_epochs        = args.n_epochs,
+            gamma           = 0.99,
+            gae_lambda      = 0.95,
+            clip_range      = 0.2,
+            ent_coef        = 0.01,
+            vf_coef         = 0.5,
+            max_grad_norm   = 0.5,
+            policy_kwargs   = dict(
+                lstm_hidden_size = args.lstm_hidden,
+                n_lstm_layers    = args.lstm_layers,
+                net_arch         = dict(pi=[256, 128], vf=[256, 128]),
+            ),
+            device          = device,
+            tensorboard_log = "logs/",
+            verbose         = 1,
+            seed            = 42,
+        )
 
     n_p = sum(p.numel() for p in model.policy.parameters())
-    print(f"\n  RecurrentPPO  params={n_p:,}  device={device}"
-          f"  envs={args.n_envs}  n_steps={args.n_steps}  batch={batch_size}")
-    print(f"  LSTM: hidden={args.lstm_hidden}  layers={args.lstm_layers}"
-          f"  timesteps={args.timesteps:,}\n")
+    log.info("RecurrentPPO  params=%d  device=%s  envs=%d  n_steps=%d  batch=%d",
+             n_p, device, args.n_envs, args.n_steps, batch_size)
+    log.info("LSTM: hidden=%d  layers=%d  timesteps=%d",
+             args.lstm_hidden, args.lstm_layers, args.timesteps)
 
     t0 = time.time()
     model.learn(total_timesteps=args.timesteps, callback=callbacks,
                 progress_bar=True)
     elapsed = time.time() - t0
-    print(f"\n  Training complete in {elapsed / 60:.1f} min")
+    log.info("Training complete in %.1f min", elapsed / 60)
 
     model.save(str(RL_DIR / "ppo_ccu"))
     train_env.save(str(RL_DIR / "vecnorm.pkl"))
-    print(f"  Saved: {RL_DIR}/ppo_ccu.zip  +  vecnorm.pkl")
+    log.info("Saved: %s/ppo_ccu.zip  +  vecnorm.pkl", RL_DIR)
 
     df = evaluate(model, eval_env, n_episodes=300)
     df.to_csv("results/eval_results.csv", index=False)
-    print("  Saved: results/eval_results.csv")
+    log.info("Saved: results/eval_results.csv")
 
 
 # ── Eval only ────────────────────────────────────────────────────────────────
 
-def eval_only(args):
+def eval_only(args) -> None:
     eval_kwargs = dict(
         model_path=args.model_path, scaler_path=args.scaler_path,
         max_steps=args.max_steps,
@@ -281,22 +359,29 @@ def eval_only(args):
         env = VecNormalize.load(str(vecnorm_path), venv)
         env.training = False
         env.norm_reward = False
-        print(f"  Loaded VecNormalize stats: {vecnorm_path}")
+        log.info("Loaded VecNormalize stats: %s", vecnorm_path)
     else:
-        print(f"  WARNING: {vecnorm_path} not found — using unnormalized env")
+        log.warning("%s not found — using unnormalized env. "
+                    "Evaluation metrics may be unreliable.", vecnorm_path)
         env = VecNormalize(venv, norm_obs=True, norm_reward=False, clip_obs=10.0)
 
     model = RecurrentPPO.load(args.model, env=env)
-    print(f"  Loaded: {args.model}")
+    log.info("Loaded: %s", args.model)
     df = evaluate(model, env, n_episodes=500)
     Path("results").mkdir(exist_ok=True)
     df.to_csv("results/eval_results.csv", index=False)
-    print("  Saved: results/eval_results.csv")
+    log.info("Saved: results/eval_results.csv")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
-def main():
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)s  %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     p = argparse.ArgumentParser(description="Train RecurrentPPO on CCU env")
 
     # Paths
@@ -306,17 +391,24 @@ def main():
     # Environment
     p.add_argument("--max-steps",   type=int,   default=120)
     p.add_argument("--lam-min",     type=float, default=0.0)
-    p.add_argument("--lam-max",     type=float, default=0.20)
-    p.add_argument("--lam-smooth",  type=float, default=0.030)
-    p.add_argument("--lam-I",       type=float, default=0.15)
-    p.add_argument("--lam-Ie",      type=float, default=0.08)
-    p.add_argument("--lam-above",   type=float, default=0.10)
-    p.add_argument("--lam-flood",   type=float, default=0.15)
+    p.add_argument("--lam-max",     type=float, default=0.10,
+                   help="Max energy weight (halved from 0.20 to reduce energy dominance)")
+    p.add_argument("--lam-smooth",  type=float, default=0.015,
+                   help="Smoothness penalty (lowered to allow faster recovery actions)")
+    p.add_argument("--lam-I",       type=float, default=0.30,
+                   help="Capture deficit integral weight (doubled: heavy penalty for time below 90%%)")
+    p.add_argument("--lam-Ie",      type=float, default=0.02,
+                   help="Energy integral weight (reduced 4x: don't fear high energy when capture needs it)")
+    p.add_argument("--lam-above",   type=float, default=0.30,
+                   help="Above-target bonus weight (3x: strong incentive to stay above 85-90%%)")
+    p.add_argument("--lam-flood",   type=float, default=0.10,
+                   help="Flood soft penalty (reduced: hard constraint does the safety work)")
     p.add_argument("--step-prob",   type=float, default=0.04)
 
     # Curriculum
-    p.add_argument("--phase1",      type=int,   default=200_000)
-    p.add_argument("--phase2",      type=int,   default=600_000)
+    p.add_argument("--phase1",      type=int,   default=300_000,
+                   help="Phase 1 start (longer Phase 0 for capture fundamentals)")
+    p.add_argument("--phase2",      type=int,   default=700_000)
 
     # Training
     p.add_argument("--timesteps",   type=int,   default=2_000_000)
@@ -331,6 +423,8 @@ def main():
     p.add_argument("--lstm-layers", type=int,   default=1)
     p.add_argument("--subproc",     action="store_true",
                    help="Use SubprocVecEnv instead of DummyVecEnv")
+    p.add_argument("--resume",      default=None,
+                   help="Path to checkpoint .zip to resume training from")
 
     # Evaluation
     p.add_argument("--eval-freq",     type=int, default=25_000)

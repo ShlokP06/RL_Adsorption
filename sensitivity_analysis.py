@@ -1,5 +1,4 @@
 import argparse
-import sys
 import warnings
 from pathlib import Path
 import numpy as np
@@ -10,9 +9,9 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.ticker as ticker
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.patches import Patch
 from tqdm import tqdm
-warnings.filterwarnings("ignore")
-sys.path.insert(0, str(Path(__file__).parent))
+
 from src.simulation import (
     run_absorber, run_stripper, flood_fraction, max_safe_L
 )
@@ -383,7 +382,6 @@ def plot_tornado(tornado_df: pd.DataFrame, out_path: Path):
         var_colours = df["colour"].tolist()
         for lbl, clr in zip(ax.get_yticklabels(), var_colours):
             lbl.set_color(clr)
-    from matplotlib.patches import Patch
     legend_elements = [
         Patch(facecolor=PALETTE["positive"], alpha=0.85,
               label="+20% perturbation"),

@@ -1,0 +1,6 @@
+CLAUDE.md
+.claude/
+src/__pycache__/
+*.pkl
+*.pt
+*.zip

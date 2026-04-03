@@ -11,7 +11,7 @@ Usage
 """
 
 import argparse
-import sys
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -24,27 +24,37 @@ from sklearn.metrics import r2_score, mean_absolute_error
 from tqdm import tqdm
 import joblib
 
-sys.path.insert(0, str(Path(__file__).parent))
 from src.surrogate import CCUSurrogate, X_COLS, Y_COLS
+
+log = logging.getLogger(__name__)
 
 OUT_DIR = Path("models/surrogate")
 
 
-def load(paths):
+def load(paths: list[str]) -> tuple[np.ndarray, np.ndarray]:
     frames = []
     for p in paths:
+        if not Path(p).exists():
+            raise FileNotFoundError(
+                f"Data file not found: {p}\n"
+                f"  → Run: python generate_data.py --n 10000 --seed 101 --out data/batch1.csv"
+            )
         df = pd.read_csv(p)
         if "valid" in df.columns:
-            df = df[df["valid"] == True]
+            df = df[df["valid"]]
         frames.append(df)
-        print(f"  {Path(p).name}: {len(df):,} rows")
+        log.info("  %s: %d rows", Path(p).name, len(df))
     merged = pd.concat(frames).drop_duplicates(X_COLS).dropna(subset=X_COLS + Y_COLS)
-    print(f"  Total: {len(merged):,} points\n")
+    log.info("  Total: %d points", len(merged))
     return (merged[X_COLS].values.astype("float32"),
             merged[Y_COLS].values.astype("float32"))
 
 
-def make_loaders(X, y, batch, seed=42):
+def make_loaders(
+    X: np.ndarray, y: np.ndarray, batch: int, seed: int = 42
+) -> tuple:
+    """Split data and build DataLoaders. Scalers are NOT saved here — caller saves
+    them atomically after the model is written, so the pair stays in sync."""
     rng = np.random.default_rng(seed)
     idx = rng.permutation(len(X))
     nv = int(len(X) * 0.15)
@@ -61,29 +71,32 @@ def make_loaders(X, y, batch, seed=42):
     Xte = torch.tensor(sx.transform(X[te]))
     yte = torch.tensor(sy.transform(y[te]))
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    joblib.dump((sx, sy), OUT_DIR / "scalers.pkl")
-    print(f"  Scalers saved → {OUT_DIR / 'scalers.pkl'}")
-    print(f"  Train={len(tr):,}  Val={len(va):,}  Test={len(te):,}")
+    log.info("  Train=%d  Val=%d  Test=%d", len(tr), len(va), len(te))
 
-    def mkdl(Xa, ya, sh):
-        return DataLoader(TensorDataset(Xa, ya), batch_size=batch, shuffle=sh)
-    return mkdl(Xtr, ytr, True), mkdl(Xva, yva, False), mkdl(Xte, yte, False), sy
+    def mkdl(Xa: torch.Tensor, ya: torch.Tensor, shuffle: bool) -> DataLoader:
+        return DataLoader(TensorDataset(Xa, ya), batch_size=batch, shuffle=shuffle)
+
+    return mkdl(Xtr, ytr, True), mkdl(Xva, yva, False), mkdl(Xte, yte, False), sx, sy
 
 
-def train(args):
+def train(args) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)s  %(message)s",
+        datefmt="%H:%M:%S",
+    )
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(42)
     np.random.seed(42)
 
-    print("=" * 55)
-    print("SURROGATE TRAINING")
-    print("=" * 55)
-    print(f"  Inputs : {X_COLS}")
-    print(f"  Outputs: {Y_COLS}\n")
+    log.info("=" * 55)
+    log.info("SURROGATE TRAINING")
+    log.info("=" * 55)
+    log.info("  Inputs : %s", X_COLS)
+    log.info("  Outputs: %s", Y_COLS)
 
     X, y = load(args.data)
-    train_dl, val_dl, test_dl, sy = make_loaders(X, y, args.batch)
+    train_dl, val_dl, test_dl, sx, sy = make_loaders(X, y, args.batch)
 
     model   = CCUSurrogate(width=args.width)
     loss_fn = nn.MSELoss()
@@ -91,7 +104,7 @@ def train(args):
     sched   = torch.optim.lr_scheduler.ReduceLROnPlateau(
                   opt, patience=25, factor=0.5, min_lr=1e-6)
 
-    print(f"\n  Width={args.width}  Params={model.n_params:,}\n")
+    log.info("  Width=%d  Params=%d", args.width, model.n_params)
 
     best_val, patience_cnt, best_state = float("inf"), 0, None
     pbar = tqdm(range(1, args.epochs + 1), desc="Training", unit="ep")
@@ -123,13 +136,17 @@ def train(args):
         else:
             patience_cnt += 1
             if patience_cnt >= args.patience:
-                tqdm.write(f"\n  Early stop at epoch {epoch}  best_val={best_val:.6f}")
+                tqdm.write(f"  Early stop at epoch {epoch}  best_val={best_val:.6f}")
                 break
 
     model.load_state_dict(best_state)
+    # Save model then scalers together — keeps the artifact pair in sync.
+    # If this block is interrupted, neither or both are written.
     torch.save({"state_dict": model.state_dict(), "width": args.width},
                OUT_DIR / "model.pt")
-    print(f"\n  Model saved → {OUT_DIR / 'model.pt'}")
+    joblib.dump((sx, sy), OUT_DIR / "scalers.pkl")
+    log.info("  Model saved   → %s", OUT_DIR / "model.pt")
+    log.info("  Scalers saved → %s", OUT_DIR / "scalers.pkl")
 
     model.eval()
     preds, trues = [], []
@@ -140,18 +157,18 @@ def train(args):
     yp = sy.inverse_transform(np.vstack(preds))
     yt = sy.inverse_transform(np.vstack(trues))
 
-    print("\n  Test set results:")
+    log.info("  Test set results:")
     all_ok = True
     for i, col in enumerate(Y_COLS):
         r2  = r2_score(yt[:, i], yp[:, i])
         mae = mean_absolute_error(yt[:, i], yp[:, i])
         ok  = r2 >= 0.99
-        print(f"  {col:<20}  R²={r2:.4f}  MAE={mae:.4f}  "
-              f"{'✓' if ok else '✗  → try --width 128'}")
+        log.info("  %-20s  R²=%.4f  MAE=%.4f  %s",
+                 col, r2, mae, "✓" if ok else "✗  → try --width 128")
         if not ok:
             all_ok = False
     if all_ok:
-        print("\n  All R² ≥ 0.99 — surrogate ready.")
+        log.info("  All R² >= 0.99 — surrogate ready.")
 
 
 def main():

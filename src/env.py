@@ -24,9 +24,10 @@ Observation (17-dim, normalised [-1, 1])
 [2-3]   G_trend, y_trend          OU drift direction (feedforward)
 [4-7]   L_act, al_act, T_act, T_ic_act   actual controllable values
 [8]     L_cmd                     commanded L (lag signal)
-[9-10]  capture, energy           process outputs
+[9]     capture                   (cap - 50) / 50  → [-1, 1] over [0, 100] %
+[10]    energy                    (eng - 5) / 5    → [-1, 1] over [0, 10] GJ/t
 [11-12] d_capture, d_energy       rate of change (derivative signal)
-[13]    cap_integral              accumulated capture deficit below 90% (integral)
+[13]    cap_integral              accumulated capture deficit below 90% (leaky)
 [14]    flood_proximity           constraint headroom = 1 - ff/0.79
 [15]    lambda_energy             Pareto weight (goal conditioning)
 [16]    T_ic_cmd                  commanded intercooler (lag signal)
@@ -38,11 +39,8 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.surrogate import SurrogatePredictor, X_BOUNDS
-from src.simulation import max_safe_L, flood_fraction
+from .surrogate import SurrogatePredictor, X_BOUNDS
+from .simulation import max_safe_L, flood_fraction
 
 CTRL = {
     "L_liq":    (2.0,  12.0),
@@ -128,7 +126,7 @@ class CCUEnv(gym.Env):
         self.prev_act = np.zeros(4, np.float32)
         self.t = 0
 
-    def set_phase(self, phase):
+    def set_phase(self, phase: int) -> None:
         self.phase = int(np.clip(phase, 0, 2))
 
     def _n01(self, v, lo, hi):
@@ -228,8 +226,8 @@ class CCUEnv(gym.Env):
             self._n01(self.T_act,  self.T_lo,  self.T_hi),    # [6]
             self._n01(self.ic_act, self.ic_lo, self.ic_hi),   # [7]
             self._n01(self.L_cmd,  self.L_lo,  self.L_hi),    # [8]  lag signal
-            self.cap / 100.0,                                   # [9]
-            self.eng / 10.0,                                    # [10]
+            self._nsym(self.cap - 50.0, 50.0),                 # [9]  [-1,1] over [0,100]%
+            self._nsym(self.eng - 5.0,   5.0),                 # [10] [-1,1] over [0,10] GJ/t
             self._nsym(self.cap - self.prev_cap, 10.0),        # [11]
             self._nsym(self.eng - self.prev_eng,  2.0),        # [12]
             self._nsym(self.cap_int, 5.0),                     # [13]
@@ -248,9 +246,11 @@ class CCUEnv(gym.Env):
         cap_n = self.cap / 100.0
         cap_reward = cap_n ** 2
 
-        # Sustained above-target bonus (replaces one-shot recovery bonus
-        # which created a perverse incentive to oscillate around 90%)
-        above = self.lam_above if self.cap >= 90.0 else 0.0
+        # Proportional above-target bonus: scales linearly from 85% to 100%.
+        # At 85%: 0, at 90%: lam_above/3, at 95%: 2*lam_above/3, at 100%: lam_above.
+        # This gives the agent marginal incentive to push capture higher, not just
+        # cross 90% and stop.  Old flat bonus had zero gradient above 90%.
+        above = self.lam_above * max(0.0, self.cap - 85.0) / 15.0
 
         # Energy penalty — normalised to [0, ~1] over typical operating range
         eng_pen = self.lam * (self.eng - 3.5) / 3.0
@@ -278,7 +278,9 @@ class CCUEnv(gym.Env):
 
     # ── Gymnasium API ─────────────────────────────────────────────────────────
 
-    def reset(self, seed=None, options=None):
+    def reset(
+        self, seed: int | None = None, options: dict | None = None
+    ) -> tuple[np.ndarray, dict]:
         super().reset(seed=seed)
         rng = self.np_random
 
@@ -313,7 +315,7 @@ class CCUEnv(gym.Env):
         self.t = 0
         return self._obs(), {}
 
-    def step(self, action):
+    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
         action = np.array(action, np.float32)
 
         # 1. Disturbances advance

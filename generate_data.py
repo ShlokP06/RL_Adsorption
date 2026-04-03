@@ -11,7 +11,6 @@ Usage
 """
 
 import argparse
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +18,6 @@ import pandas as pd
 from scipy.stats import qmc
 from tqdm.auto import tqdm
 
-sys.path.insert(0, str(Path(__file__).parent))
 from src.simulation import (
     run_absorber, run_stripper, flood_fraction, T_reb,
     p_star, density, viscosity, diffusivity_CO2_liq,
@@ -141,7 +139,7 @@ def generate(n, seed, out, bounds, save_every=5000):
 
     df = pd.DataFrame(records)
     df.to_csv(out, index=False)
-    dv = df[df["valid"] == True].copy()
+    dv = df[df["valid"]].copy()
 
     print(f"\n{'='*55}")
     print(f"  {len(dv)} valid / {n} attempted ({len(dv)/n*100:.1f}%)  errors={n_err}")

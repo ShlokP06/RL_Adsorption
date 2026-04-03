@@ -29,8 +29,13 @@ N_INPUTS = len(X_COLS)   # 6
 
 
 class CCUSurrogate(nn.Module):
+    """4-layer MLP surrogate: 6 steady-state inputs → 3 process outputs.
 
-    def __init__(self, width=64):
+    Architecture: N_INPUTS → width → width → width//2 → 3.
+    Hidden layers use Kaiming/ReLU init; output layer uses Xavier.
+    """
+
+    def __init__(self, width: int = 64) -> None:
         super().__init__()
         self.width = width
         self.net = nn.Sequential(
@@ -47,7 +52,7 @@ class CCUSurrogate(nn.Module):
         nn.init.xavier_uniform_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
     @property
@@ -60,9 +65,24 @@ class SurrogatePredictor:
 
     def __init__(self, model_path="models/surrogate/model.pt",
                  scaler_path="models/surrogate/scalers.pkl"):
+        model_path   = str(model_path)
+        scaler_path  = str(scaler_path)
+
+        import os
+        if not os.path.exists(scaler_path):
+            raise FileNotFoundError(
+                f"Surrogate scalers not found: {scaler_path}\n"
+                f"  → Run: python train_surrogate.py --data data/merged_ccu.csv"
+            )
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Surrogate model not found: {model_path}\n"
+                f"  → Run: python train_surrogate.py --data data/merged_ccu.csv"
+            )
+
         self.sx, self.sy = joblib.load(scaler_path)
 
-        ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
+        ckpt = torch.load(model_path, map_location="cpu", weights_only=True)
         if isinstance(ckpt, dict) and "state_dict" in ckpt:
             state = ckpt["state_dict"]
             width = ckpt.get("width", state["net.0.weight"].shape[0])
@@ -75,7 +95,29 @@ class SurrogatePredictor:
         self.model.eval()
 
     @torch.no_grad()
-    def predict(self, G_gas, L_liq, y_CO2_in, T_L_in_C, alpha_lean, T_ic_C):
+    def predict(
+        self,
+        G_gas: float,
+        L_liq: float,
+        y_CO2_in: float,
+        T_L_in_C: float,
+        alpha_lean: float,
+        T_ic_C: float,
+    ) -> dict[str, float]:
+        """Run one steady-state surrogate query.
+
+        Args:
+            G_gas: Gas flux [kg/m²/s].
+            L_liq: Liquid flux [kg/m²/s].
+            y_CO2_in: Inlet CO₂ mole fraction [-].
+            T_L_in_C: Lean solvent inlet temperature [°C].
+            alpha_lean: Lean loading [mol CO₂/mol MEA].
+            T_ic_C: Intercooler temperature [°C].
+
+        Returns:
+            Dict with keys: capture_rate [%], E_specific_GJ [GJ/t CO₂],
+            alpha_rich [mol/mol].
+        """
         x = np.array([[G_gas, L_liq, y_CO2_in, T_L_in_C, alpha_lean, T_ic_C]],
                      dtype="float32")
         y = self.sy.inverse_transform(

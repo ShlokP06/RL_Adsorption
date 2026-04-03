@@ -1,14 +1,15 @@
 import argparse
+import glob
 from pathlib import Path
 import pandas as pd
 
-X_COLS = ["G_gas_kg_m2s", "L_liq_kg_m2s", "y_CO2_in",
-          "T_L_in_C", "alpha_lean", "T_ic_C"]
-Y_COLS = ["capture_rate", "E_specific_GJ", "alpha_rich"]
-KEEP   = X_COLS + Y_COLS + [
+from src.surrogate import X_COLS, Y_COLS
+
+KEEP = X_COLS + Y_COLS + [
     "delta_alpha", "T_L_bottom_C", "y_CO2_out",
     "T_reb_C", "flood_fraction", "LG_ratio", "Ha_avg", "E_factor_avg",
 ]
+
 
 def main():
     p = argparse.ArgumentParser()
@@ -16,7 +17,6 @@ def main():
     p.add_argument("--out",   default="data/ccu_merged.csv")
     args = p.parse_args()
 
-    import glob
     all_files = []
     for pattern in args.files:
         expanded = glob.glob(pattern)
@@ -33,7 +33,7 @@ def main():
         df = pd.read_csv(path)
         n_before = len(df)
         if "valid" in df.columns:
-            df = df[df["valid"] == True]
+            df = df[df["valid"]]
         frames.append(df)
         print(f"  {Path(path).name:<30} {n_before:>6} rows  ->  {len(df):>6} valid")
 
