@@ -21,8 +21,8 @@ A reinforcement learning controller for optimizing **post-combustion CO₂ captu
 ### Option A — Docker (recommended, one command)
 
 ```bash
-git clone https://github.com/ShlokP06/Adsorber.git
-cd Adsorber
+git clone https://github.com/ShlokP06/RL_Adsorption.git
+cd RL_Adsorption
 docker compose up
 ```
 
