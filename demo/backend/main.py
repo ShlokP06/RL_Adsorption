@@ -109,14 +109,19 @@ async def lifespan(app: FastAPI):  # type: ignore[type-arg]
 
 app = FastAPI(title="Adsorber RL Demo — The Plant Under Attack", lifespan=lifespan)
 
+_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+_extra_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+_allow_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    *_extra_origins,
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
