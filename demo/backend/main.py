@@ -168,10 +168,10 @@ async def clear_disturbance():
 
 @app.post("/attack")
 async def attack_plant():
-    """Push G_gas to 1.50 and y_CO2_in to 0.20 — the 'wow moment'."""
+    """Push G_gas to 1.20 and y_CO2_in to 0.14 — the 'wow moment'."""
     async with sim_lock:
         demo.attack_plant()
-    return {"status": "ok", "G_gas": 1.50, "y_CO2_in": 0.20}
+    return {"status": "ok", "G_gas": 1.20, "y_CO2_in": 0.14}
 
 
 @app.post("/reset_impact")

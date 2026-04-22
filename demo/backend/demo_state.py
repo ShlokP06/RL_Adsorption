@@ -137,7 +137,7 @@ class DemoState:
         else:
             action = self._frozen_action(raw)
 
-        SMOOTH = 0.55  # EMA α — keeps responsiveness while damping high-freq oscillation
+        SMOOTH = 0.72  # EMA α — keeps responsiveness while damping high-freq oscillation
         action = SMOOTH * action + (1.0 - SMOOTH) * self._smooth_action
         self._smooth_action = action.copy()
 
@@ -265,8 +265,8 @@ class DemoState:
         self._manual_dist = None
 
     def attack_plant(self) -> None:
-        """Push G_gas to 1.5 and y_CO2_in to 0.20 — the demo 'wow moment'."""
-        self.set_disturbance(1.50, 0.20)
+        """Push G_gas to 1.2 and y_CO2_in to 0.14 — the demo 'wow moment'."""
+        self.set_disturbance(1.20, 0.14)
 
     def reset_impact(self) -> None:
         """Zero the impact counters without resetting the simulation."""
