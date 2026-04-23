@@ -21,7 +21,7 @@ Usage
     python compare_controllers.py
     python compare_controllers.py --scenario 1
     python compare_controllers.py --no-plot
-    python compare_controllers.py --lam-max 0.10 --lam 0.05
+    python compare_controllers.py --lam-max 0.05 --lam 0.025
 """
 
 import argparse
@@ -199,8 +199,8 @@ def run_scenario(
     rl_model,
     scenario: Dict,
     n_steps: int = 50,
-    lam: float = 0.05,
-    lam_max: float = 0.10,
+    lam: float = 0.025,
+    lam_max: float = 0.05,
     norm_env=None,
 ) -> Dict:
     """Run one disturbance scenario for both controllers.
@@ -254,6 +254,12 @@ def run_scenario(
         scaler_path="models/surrogate/scalers.pkl",
         max_steps=n_steps + 5,
         lambda_range=(0.0, lam_max),
+        lam_smooth=0.015,
+        lam_integral=0.40,
+        lam_energy_int=0.02,
+        lam_above=0.40,
+        lam_over=0.25,
+        lam_flood=0.10,
         step_prob=0.0,
         obs_noise=False,
         domain_rand=False,
@@ -810,10 +816,10 @@ def main() -> None:
     p.add_argument("--scenario", type=int, default=0,
                    help="0=all scenarios, 1=G_gas step, 2=y_CO2 step, 3=combined.")
     p.add_argument("--steps", type=int, default=60, help="Total simulation steps per scenario.")
-    p.add_argument("--lam", type=float, default=0.05, help="Energy penalty weight for RL agent (goal conditioning).")
-    p.add_argument("--lam-max", type=float, default=0.10, 
+    p.add_argument("--lam", type=float, default=0.025, help="Energy penalty weight for RL agent (goal conditioning, midpoint of training range).")
+    p.add_argument("--lam-max", type=float, default=0.05,
                    help="Training lam_max -- must match --lam-max used in train_rl.py "
-                        "(default 0.10). Controls obs[15] normalisation range.")
+                        "(default 0.05). Controls obs[15] normalisation range.")
     p.add_argument("--no-plot", action="store_true", help="Skip matplotlib dashboard generation.")
     args = p.parse_args()
     Path("results").mkdir(exist_ok=True)
