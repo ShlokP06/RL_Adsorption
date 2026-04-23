@@ -168,7 +168,7 @@ export default function App() {
           <input
             type="range"
             className="lambda-range"
-            min={0} max={0.08} step={0.005}
+            min={0} max={0.20} step={0.005}
             value={lambdaVal}
             onChange={handleLambda}
           />

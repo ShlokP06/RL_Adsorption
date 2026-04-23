@@ -98,7 +98,7 @@ class ThreeLoopPID:
     IC_NOM = 38.0
 
     # Capture rate setpoint
-    CAP_SP = 90.0
+    CAP_SP = 95.0
 
     def __init__(self) -> None:
         # L_liq PID: increases solvent flow when capture drops
@@ -389,8 +389,8 @@ def compute_stats(data: Dict, disturbance_step: int) -> Dict:
             "min_cap"        : float(cap[ds:].min()),
             "mean_eng_post"  : float(eng[ds:].mean()),
             "std_eng_post"   : float(eng[ds:].std()),
-            "recovery_time"  : recovery_time(cap, 85.0, ds),
-            "iae_capture"    : integral_absolute_error(cap, 90.0, ds),
+            "recovery_time"  : recovery_time(cap, 90.0, ds),
+            "iae_capture"    : integral_absolute_error(cap, 95.0, ds),
             "iae_energy"     : integral_absolute_error(eng, data["eng0"], ds),
             "pct_above_85"   : float((cap[ds:] >= 85.0).mean() * 100),
             "pct_above_90"   : float((cap[ds:] >= 90.0).mean() * 100),
@@ -463,12 +463,12 @@ def plot_dashboard(
     ax1.axvline(ds, color=C_DIST, lw=1.5, ls=":")
 
     ax2 = fig.add_subplot(gs[0, 1:3])
-    ax2.fill_between(t, 85, 100, alpha=0.08, color="green", label="Target zone (85%+)")
+    ax2.fill_between(t, 90, 100, alpha=0.08, color="green", label="Target zone (90%+)")
     ax2.plot(t, data["rl_capture"],  color=C_RL,  lw=2.5, label="PPO-LSTM")
     ax2.plot(t, data["pid_capture"], color=C_PID, lw=2.5,
              linestyle="--", label="PID")
-    ax2.axhline(90, color="green", lw=1.2, ls="--", alpha=0.7, label="90% setpoint")
-    ax2.axhline(85, color="green", lw=0.8, ls=":",  alpha=0.4)
+    ax2.axhline(95, color="green", lw=1.2, ls="--", alpha=0.7, label="95% setpoint")
+    ax2.axhline(90, color="green", lw=0.8, ls=":",  alpha=0.4)
     style_ax(ax2, "CO2 Capture Rate", "Capture Rate (%)", ylim=(20, 105))
     ax2.legend(fontsize=8, loc="lower right")
 
@@ -525,7 +525,7 @@ def plot_dashboard(
     )
     ax9.hist(post_rl,  bins=bins, alpha=0.65, color=C_RL,  label="PPO-LSTM", density=True)
     ax9.hist(post_pid, bins=bins, alpha=0.65, color=C_PID, label="PID",       density=True)
-    ax9.axvline(90, color="green", lw=1.5, ls="--", label="90% setpoint")
+    ax9.axvline(95, color="green", lw=1.5, ls="--", label="95% setpoint")
     ax9.axvline(post_rl.mean(),  color=C_RL,  lw=1.5, ls="-", alpha=0.8)
     ax9.axvline(post_pid.mean(), color=C_PID, lw=1.5, ls="-", alpha=0.8)
     ax9.set_title("Capture Distribution (post-dist.)", fontsize=10,
@@ -568,7 +568,7 @@ def plot_dashboard(
                  c=C_RL,  alpha=0.3, s=20, marker="o", label="RL (pre)")
     ax11.scatter(data["rl_energy"][post_mask],  data["rl_capture"][post_mask],
                  c=C_RL,  alpha=0.7, s=30, marker="o", label="RL (post)")
-    ax11.axhline(90, color="green", lw=1, ls="--", alpha=0.6)
+    ax11.axhline(95, color="green", lw=1, ls="--", alpha=0.6)
     ax11.set_xlabel("Energy (GJ/tonne CO2)", fontsize=8)
     ax11.set_ylabel("Capture Rate (%)", fontsize=8)
     ax11.set_title("Pareto: Capture vs Energy", fontsize=10,
@@ -602,8 +602,8 @@ def plot_dashboard(
         spine.set_edgecolor(C_GRID)
 
     ax13 = fig.add_subplot(gs[3, 1])
-    dev_rl  = np.abs(data["rl_capture"]  - 90.0)
-    dev_pid = np.abs(data["pid_capture"] - 90.0)
+    dev_rl  = np.abs(data["rl_capture"]  - 95.0)
+    dev_pid = np.abs(data["pid_capture"] - 95.0)
     ax13.plot(t, dev_rl,  color=C_RL,  lw=2, label="PPO-LSTM")
     ax13.plot(t, dev_pid, color=C_PID, lw=2, ls="--", label="PID")
     ax13.fill_between(t, dev_rl, dev_pid,
@@ -611,7 +611,7 @@ def plot_dashboard(
                       label="RL closer to SP")
     ax13.axvline(ds, color=C_DIST, lw=1.5, ls=":", label="Disturbance")
     ax13.axhline(0, color="green", lw=0.8, ls="--", alpha=0.4)
-    ax13.set_title("|Capture - 90%| Deviation", fontsize=10,
+    ax13.set_title("|Capture - 95%| Deviation", fontsize=10,
                    fontweight="bold", color=C_LINE)
     ax13.set_xlabel("Timestep", fontsize=8)
     ax13.set_ylabel("Absolute deviation (%)", fontsize=8)
@@ -771,9 +771,17 @@ def plot_dashboard(
 
 SCENARIOS: Dict[int, Dict] = {
     1: {
-        "name"             : "Gas Flow Rate Step Change (G: 0.8 -> 1.25 kg/m2/s)",
+        "name"             : "Gas Flow Rate Step Change (G: 0.8 -> 1.35 kg/m2/s) — High Load",
         "G_init"           : 0.8,
-        "G_final"          : 1.25,
+        "G_final"          : 1.35,
+        "y_init"           : 0.13,
+        "y_final"          : 0.13,
+        "disturbance_step" : 15,
+    },
+    4: {
+        "name"             : "Extreme Load — Near-Flood (G: 0.8 -> 1.60 kg/m2/s)",
+        "G_init"           : 0.8,
+        "G_final"          : 1.60,
         "y_init"           : 0.13,
         "y_final"          : 0.13,
         "disturbance_step" : 15,
@@ -816,7 +824,7 @@ def main() -> None:
     p.add_argument("--scenario", type=int, default=0,
                    help="0=all scenarios, 1=G_gas step, 2=y_CO2 step, 3=combined.")
     p.add_argument("--steps", type=int, default=60, help="Total simulation steps per scenario.")
-    p.add_argument("--lam", type=float, default=0.025, help="Energy penalty weight for RL agent (goal conditioning, midpoint of training range).")
+    p.add_argument("--lam", type=float, default=0.05, help="Energy penalty weight for RL agent (goal conditioning). Set to lam_max for max energy saving.")
     p.add_argument("--lam-max", type=float, default=0.05,
                    help="Training lam_max -- must match --lam-max used in train_rl.py "
                         "(default 0.05). Controls obs[15] normalisation range.")
