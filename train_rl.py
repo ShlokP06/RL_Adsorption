@@ -394,9 +394,11 @@ def main() -> None:
                    help="Use SubprocVecEnv instead of DummyVecEnv")
     p.add_argument("--resume",      default=None,
                    help="Path to checkpoint .zip to resume training from")
-    p.add_argument("--eval-freq",     type=int, default=25_000)
+    p.add_argument("--eval-freq",     type=int, default=100_000,
+                   help="Timesteps between eval passes — raise to reduce GPU idle during eval")
     p.add_argument("--eval-envs",     type=int, default=8)
-    p.add_argument("--eval-episodes", type=int, default=20)
+    p.add_argument("--eval-episodes", type=int, default=10,
+                   help="Episodes per eval pass — 10 × 120 steps / 8 envs = 2 batches")
     p.add_argument("--eval-only",     action="store_true")
     p.add_argument("--model",         default="models/rl/best/best_model.zip")
     p.add_argument("--vecnorm",       default="models/rl/vecnorm.pkl",
