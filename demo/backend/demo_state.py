@@ -34,10 +34,11 @@ class DemoState:
 
     STEP_INTERVAL: float = 0.5   # seconds per sim tick
     MAX_HISTORY:   int   = 120   # 60 s of data @ 500 ms
+    ACTION_SMOOTH: float = 0.93  # EMA α for action smoothing
 
-    # Impact scale: assume 100 m² column, ~0.3 kg CO2 /s captured at nominal
-    _CO2_SCALE: float = 0.3 * 0.5 / 1000  # kg/s × dt → tonnes per step
-    _KWH_SCALE: float = 0.3 * 0.5 * 277.78  # GJ/t × t/step → kWh/step
+    # Impact scale: assume 100 m² column, ~0.3 kg CO2/s captured at nominal
+    _CO2_SCALE: float = 0.3 * 0.5 / 1000          # kg/s × dt → tonnes per step
+    _KWH_SCALE: float = 0.3 * 0.5 / 1000 * 277.78 # GJ/t × tonnes/step → kWh/step
 
     def __init__(self, config: dict) -> None:
         self._config = config
@@ -137,8 +138,7 @@ class DemoState:
         else:
             action = self._frozen_action(raw)
 
-        SMOOTH = 0.72  # EMA α — keeps responsiveness while damping high-freq oscillation
-        action = SMOOTH * action + (1.0 - SMOOTH) * self._smooth_action
+        action = self.ACTION_SMOOTH * action + (1.0 - self.ACTION_SMOOTH) * self._smooth_action
         self._smooth_action = action.copy()
 
         self.obs, _reward, dones, _infos = self.rl_vec.step(action)
@@ -214,16 +214,18 @@ class DemoState:
     ) -> dict:
         if rl_result is None:
             raw = self._raw()
+            def _v(val, default):
+                return val if val is not None else default
             rl_result = {
-                "cap":    round(raw.cap    or 85.0, 3),
-                "eng":    round(raw.eng    or 4.0,  4),
-                "G":      round(raw.G      or 0.8,  4),
-                "y":      round(raw.y      or 0.08, 4),
-                "L":      round(raw.L_act  or 5.0,  4),
-                "al":     round(raw.al_act or 0.27, 4),
-                "T":      round(raw.T_act  or 40.0, 3),
-                "ic":     round(raw.ic_act or 38.0, 3),
-                "ff":     round(raw.ff     or 0.0,  4),
+                "cap":    round(_v(raw.cap,    85.0), 3),
+                "eng":    round(_v(raw.eng,    4.0),  4),
+                "G":      round(_v(raw.G,      0.8),  4),
+                "y":      round(_v(raw.y,      0.08), 4),
+                "L":      round(_v(raw.L_act,  5.0),  4),
+                "al":     round(_v(raw.al_act, 0.27), 4),
+                "T":      round(_v(raw.T_act,  40.0), 3),
+                "ic":     round(_v(raw.ic_act, 38.0), 3),
+                "ff":     round(_v(raw.ff,     0.0),  4),
                 "action": [0.0, 0.0, 0.0, 0.0],
             }
         if pid_result is None:
@@ -267,6 +269,9 @@ class DemoState:
     def attack_plant(self) -> None:
         """Push G_gas to 1.2 and y_CO2_in to 0.14 — the demo 'wow moment'."""
         self.set_disturbance(1.20, 0.14)
+        self.lstm_states = None
+        self.episode_starts[:] = True
+        self._smooth_action[:] = 0.0
 
     def reset_impact(self) -> None:
         """Zero the impact counters without resetting the simulation."""

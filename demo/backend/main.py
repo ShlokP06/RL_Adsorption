@@ -10,7 +10,7 @@ POST /reset              — reset both sims, return initial snapshot
 POST /step               — manual single step (normally auto-stepped)
 POST /set_disturbance    — {G_gas, y_CO2_in} override
 POST /clear_disturbance  — remove manual override
-POST /attack             — slam G_gas→2.5, y_CO2_in→0.20
+POST /attack             — slam G_gas→1.2, y_CO2_in→0.14
 POST /set_lambda         — {lambda_energy} live Pareto tuning
 POST /freeze             — {frozen: bool}
 POST /toggle_controller  — toggle frozen state
